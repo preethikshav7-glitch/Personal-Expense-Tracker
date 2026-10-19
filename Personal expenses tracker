@@ -1,0 +1,244 @@
+import java.io.IOException;
+import java.nio.file.*;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.format.DateTimeParseException;
+import java.util.*;
+
+enum Type { INCOME, EXPENSE }
+
+class Transaction {
+    final int id;
+    final Type type;
+    final String category, description;
+    final double amount;
+    final LocalDate date;
+
+    Transaction(int id, Type type, String category, double amount, String description, LocalDate date) {
+        this.id = id;
+        this.type = type;
+        this.category = category;
+        this.amount = amount;
+        this.description = description;
+        this.date = date;
+    }
+
+    String toCsv() {
+        return id + "," + type + "," + category + "," + amount + "," + description + "," + date;
+    }
+
+    static Transaction fromCsv(String line) {
+        String[] p = line.split(",", 6);
+        return new Transaction(Integer.parseInt(p[0]), Type.valueOf(p[1]), p[2],
+                Double.parseDouble(p[3]), p[4], LocalDate.parse(p[5]));
+    }
+
+    @Override
+    public String toString() {
+        return String.format("[%d] %s | %-10s | %-8s | %10.2f | %s",
+                id, date, type, category, amount, description);
+    }
+}
+
+class Tracker {
+    private static final Path FILE = Paths.get("transactions.csv");
+    private final List<Transaction> transactions = new ArrayList<>();
+    private int nextId = 1;
+
+    Tracker() {
+        load();
+    }
+
+    void add(Type type, String category, double amount, String description) {
+        String cat = category.replace(",", " ");
+        String desc = description.replace(",", " ");
+        transactions.add(new Transaction(nextId++, type, cat, amount, desc, LocalDate.now()));
+        save();
+    }
+
+    boolean delete(int id) {
+        boolean removed = transactions.removeIf(t -> t.id == id);
+        if (removed) save();
+        return removed;
+    }
+
+    List<Transaction> all() {
+        return transactions;
+    }
+
+    double total(Type type) {
+        double sum = 0;
+        for (Transaction t : transactions) if (t.type == type) sum += t.amount;
+        return sum;
+    }
+
+    double balance() {
+        return total(Type.INCOME) - total(Type.EXPENSE);
+    }
+
+    Map<String, Double> byCategory(Type type) {
+        Map<String, Double> map = new TreeMap<>();
+        for (Transaction t : transactions) {
+            if (t.type == type) map.merge(t.category, t.amount, Double::sum);
+        }
+        return map;
+    }
+
+    List<Transaction> forMonth(YearMonth ym) {
+        List<Transaction> result = new ArrayList<>();
+        for (Transaction t : transactions) {
+            if (YearMonth.from(t.date).equals(ym)) result.add(t);
+        }
+        return result;
+    }
+
+    private void load() {
+        if (!Files.exists(FILE)) return;
+        try {
+            for (String line : Files.readAllLines(FILE)) {
+                if (line.isBlank()) continue;
+                try {
+                    Transaction t = Transaction.fromCsv(line);
+                    transactions.add(t);
+                    nextId = Math.max(nextId, t.id + 1);
+                } catch (RuntimeException e) {
+                    System.out.println("Skipped invalid line: " + line);
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Could not read data file: " + e.getMessage());
+        }
+    }
+
+    private void save() {
+        List<String> lines = new ArrayList<>();
+        for (Transaction t : transactions) lines.add(t.toCsv());
+        try {
+            Files.write(FILE, lines);
+        } catch (IOException e) {
+            System.out.println("Could not save data: " + e.getMessage());
+        }
+    }
+}
+
+public class ExpenseTracker {
+    private static final Scanner in = new Scanner(System.in);
+    private static final Tracker tracker = new Tracker();
+
+    public static void main(String[] args) {
+        while (true) {
+            System.out.println("\n===== Personal Expenses Tracker =====");
+            System.out.println("1. Add income");
+            System.out.println("2. Add expense");
+            System.out.println("3. View all transactions");
+            System.out.println("4. Delete a transaction");
+            System.out.println("5. View balance");
+            System.out.println("6. Category summary");
+            System.out.println("7. Monthly report");
+            System.out.println("0. Exit");
+            int choice = readInt("Choose: ");
+
+            switch (choice) {
+                case 1 -> addTransaction(Type.INCOME);
+                case 2 -> addTransaction(Type.EXPENSE);
+                case 3 -> viewAll();
+                case 4 -> {
+                    int id = readInt("Transaction ID to delete: ");
+                    System.out.println(tracker.delete(id) ? "Deleted." : "ID not found.");
+                }
+                case 5 -> showBalance();
+                case 6 -> {
+                    printCategories("Income by category", Type.INCOME);
+                    printCategories("Expenses by category", Type.EXPENSE);
+                }
+                case 7 -> monthlyReport();
+                case 0 -> {
+                    System.out.println("Goodbye!");
+                    return;
+                }
+                default -> System.out.println("Invalid option.");
+            }
+        }
+    }
+
+    private static void addTransaction(Type type) {
+        String category = readLine("Category (e.g. Food, Travel, Salary): ");
+        double amount = readAmount("Amount: ");
+        String description = readLine("Description: ");
+        tracker.add(type, category, amount, description);
+        System.out.println(type + " added.");
+    }
+
+    private static void viewAll() {
+        if (tracker.all().isEmpty()) {
+            System.out.println("No transactions yet.");
+            return;
+        }
+        tracker.all().forEach(System.out::println);
+    }
+
+    private static void showBalance() {
+        System.out.printf("Total income  : %10.2f%n", tracker.total(Type.INCOME));
+        System.out.printf("Total expenses: %10.2f%n", tracker.total(Type.EXPENSE));
+        System.out.printf("Balance       : %10.2f%n", tracker.balance());
+    }
+
+    private static void printCategories(String title, Type type) {
+        System.out.println("\n" + title + ":");
+        Map<String, Double> map = tracker.byCategory(type);
+        if (map.isEmpty()) {
+            System.out.println("  (none)");
+            return;
+        }
+        map.forEach((cat, sum) -> System.out.printf("  %-12s %10.2f%n", cat, sum));
+    }
+
+    private static void monthlyReport() {
+        YearMonth ym;
+        try {
+            ym = YearMonth.parse(readLine("Month (YYYY-MM): "));
+        } catch (DateTimeParseException e) {
+            System.out.println("Invalid format. Use YYYY-MM, e.g. 2026-10.");
+            return;
+        }
+        List<Transaction> list = tracker.forMonth(ym);
+        if (list.isEmpty()) {
+            System.out.println("No transactions for " + ym + ".");
+            return;
+        }
+        double income = 0, expense = 0;
+        for (Transaction t : list) {
+            System.out.println(t);
+            if (t.type == Type.INCOME) income += t.amount;
+            else expense += t.amount;
+        }
+        System.out.printf("%nIncome: %.2f | Expenses: %.2f | Net: %.2f%n", income, expense, income - expense);
+    }
+
+    private static String readLine(String prompt) {
+        System.out.print(prompt);
+        return in.nextLine().trim();
+    }
+
+    private static int readInt(String prompt) {
+        while (true) {
+            try {
+                return Integer.parseInt(readLine(prompt));
+            } catch (NumberFormatException e) {
+                System.out.println("Please enter a whole number.");
+            }
+        }
+    }
+
+    private static double readAmount(String prompt) {
+        while (true) {
+            try {
+                double value = Double.parseDouble(readLine(prompt));
+                if (value > 0) return value;
+                System.out.println("Amount must be greater than zero.");
+            } catch (NumberFormatException e) {
+                System.out.println("Please enter a valid number.");
+            }
+        }
+    }
+}
